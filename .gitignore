@@ -1,0 +1,4 @@
+__pycache__/
+*.pyc
+kino_uptime.csv
+kino_uptime_test.csv
