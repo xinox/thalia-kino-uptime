@@ -79,6 +79,30 @@ grob gehalten, um keine echten Ausfälle zu verschlucken.
 Ohne gesetztes `KUMA_PUSH_URL`-Secret läuft der Check trotzdem durch (nur ohne
 Kuma-Heartbeat) – nützlich zum Testen des Workflows selbst.
 
+### Lite-Modus (`--lite`)
+
+Der gehostete Check läuft mit `--lite`: Die Annahme ist, dass die Reservierung
+technisch für alle Vorstellungen gleich funktioniert – wenn eine geht, gehen alle.
+Statt bei jedem Lauf ~80 Vorstellungen einzeln abzufragen, arbeitet der Lite-Modus
+als kleine Zustandsmaschine:
+
+1. **Vollcheck:** Beim allerersten Lauf (oder nach einem Fehlschlag) werden alle
+   aktuell testbaren Vorstellungen geprüft.
+2. Waren alle UP, wird **eine zufällige** davon als Stellvertreter gemerkt
+   (`lite_state.json`, wird dafür committet – eine kleine, überschriebene Datei,
+   kein wachsendes Log).
+3. Ab dem nächsten Lauf wird **nur noch diese eine** Vorstellung getestet – spart
+   pro Durchlauf ~80 Requests gegen kino-bous.de/kinoheld.de.
+4. Schlägt der Stellvertreter fehl (oder ist er inzwischen aus dem Programm/
+   Verkaufsfenster gefallen), fällt der nächste Lauf automatisch zurück auf einen
+   Vollcheck – und bleibt dabei, bis wieder alle Vorstellungen UP sind. Danach wird
+   erneut eine neue Vorstellung zufällig ausgewählt.
+
+`lite_state.json` wird nur bei einem Moduswechsel neu committet (nicht bei jedem
+Lauf) – im Normalbetrieb (Lite-Test bleibt UP) entstehen also keine Commits.
+Lokal ohne `--lite` verhält sich `monitor.py` unverändert wie bisher (immer
+Vollcheck), z.B. für einen manuellen Gesamtüberblick.
+
 ## Bekannte Einschränkungen
 
 - Kuma trackt nur den Gesamtstatus des Reservierungssystems pro Lauf, keine
@@ -86,3 +110,8 @@ Kuma-Heartbeat) – nützlich zum Testen des Workflows selbst.
   welcher Fehler) stehen im jeweiligen GitHub-Actions-Lauf-Log.
 - `NICHT_BUCHBAR` (z.B. ausverkauft oder gesperrt) zählt bewusst nicht als Ausfall
   und fließt nicht in den Kuma-Status ein.
+- Im Lite-Modus wird im Normalbetrieb nur eine einzelne, zufällig gewählte
+  Vorstellung getestet – ein isoliertes Problem bei genau einem Saal/Film, während
+  alle anderen funktionieren, wird dadurch erst erkannt, wenn zufällig diese eine
+  Vorstellung gezogen wird (oder beim nächsten Vollcheck). Bewusster Trade-off für
+  weniger Last, basierend auf der Annahme "geht eine Reservierung, gehen alle".

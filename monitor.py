@@ -12,7 +12,9 @@ from __future__ import annotations
 
 import argparse
 import csv
+import json
 import os
+import random
 import sys
 import time
 import urllib.parse
@@ -53,6 +55,24 @@ def write_github_summary(text: str) -> None:
         f.write(text + "\n")
 
 
+def load_lite_state(path: str) -> dict:
+    """Lite-Modus-Zustand: {"mode": "full"|"single", "show_id": str|None}.
+    Fehlt die Datei oder ist sie kaputt, wird mit einem Vollcheck gestartet."""
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+        if data.get("mode") in ("full", "single"):
+            return data
+    except (OSError, ValueError):
+        pass
+    return {"mode": "full", "show_id": None}
+
+
+def save_lite_state(path: str, state: dict) -> None:
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(state, f)
+
+
 def run_once(tester, args, state) -> bool:
     """Führt einen Durchlauf aus. Rückgabewert: True = alles UP (oder nichts zu
     testen), False = mindestens ein DOWN oder das Programm konnte nicht geladen
@@ -77,10 +97,26 @@ def run_once(tester, args, state) -> bool:
             print(f"  - entfernt:    {t}")
     state["titles"] = titles
 
+    # Lite-Modus: läuft ein voriger Einzeltest noch sauber, reicht es, nur diese
+    # eine Vorstellung zu prüfen ("wenn eine Reservierung geht, gehen alle") –
+    # das spart pro Durchlauf ~80 Requests. Schlägt sie fehl (oder ist sie nicht
+    # mehr im Verkaufsfenster/Programm), wird sofort auf einen Vollcheck zurück-
+    # gefallen, der auch die Grundlage für die nächste Zufallsauswahl liefert.
+    lite_state = load_lite_state(args.lite_state) if args.lite else {"mode": "full", "show_id": None}
+    single_target, single_result = None, None
+    if lite_state["mode"] == "single" and lite_state.get("show_id"):
+        candidate = next((s for s in program if s.show_id == lite_state["show_id"]), None)
+        if candidate is not None:
+            probe = tester.check(candidate.show_id, candidate.title, candidate.start,
+                                  candidate.res_from, candidate.res_until)
+            if probe.status in ("UP", "DOWN"):
+                single_target, single_result = candidate, probe
+
     counts = defaultdict(int)
     latencies = []
-    for s in program:
-        r = tester.check(s.show_id, s.title, s.start, s.res_from, s.res_until)
+    up_showings = []
+
+    def process(s, r):
         counts[r.status] += 1
         if r.latency_ms is not None:
             latencies.append(r.latency_ms)
@@ -88,13 +124,33 @@ def run_once(tester, args, state) -> bool:
             log(args.csv, r)
         if r.status != "UP" and not r.status.startswith("SKIP"):
             print(f"  {r.status:<13} {s.start:%d.%m. %H:%M} {s.title} (showId {s.show_id}) {r.error}")
-        if r.widget_http is not None:          # nur nach echten Requests pausieren
-            time.sleep(args.pause)
+        if r.status == "UP":
+            up_showings.append(s)
 
+    if single_target is not None:
+        process(single_target, single_result)
+    else:
+        for s in program:
+            r = tester.check(s.show_id, s.title, s.start, s.res_from, s.res_until)
+            process(s, r)
+            if r.widget_http is not None:      # nur nach echten Requests pausieren
+                time.sleep(args.pause)
+
+    if args.lite:
+        if single_target is not None:
+            new_lite_state = ({"mode": "single", "show_id": single_target.show_id}
+                               if single_result.status == "UP" else {"mode": "full", "show_id": None})
+        elif up_showings:
+            new_lite_state = {"mode": "single", "show_id": random.choice(up_showings).show_id}
+        else:
+            new_lite_state = {"mode": "full", "show_id": None}
+        save_lite_state(args.lite_state, new_lite_state)
+
+    mode_label = " [Lite]" if single_target is not None else (" [Voll]" if args.lite else "")
     up, down = counts["UP"], counts["DOWN"]
     tested = up + down
     pct = f"{100 * up / tested:.0f} %" if tested else "–"
-    print(f"{now:%Y-%m-%d %H:%M:%S}  {len(program)} Vorstellungen / {len(titles)} Filme | "
+    print(f"{now:%Y-%m-%d %H:%M:%S}{mode_label}  {len(program)} Vorstellungen / {len(titles)} Filme | "
           f"getestet {tested}: UP {up}, DOWN {down} ({pct}) | "
           f"nicht buchbar {counts['NICHT_BUCHBAR']} | "
           f"übersprungen {sum(v for k, v in counts.items() if k.startswith('SKIP'))}")
@@ -102,7 +158,7 @@ def run_once(tester, args, state) -> bool:
     latencies.sort()
     median_latency = latencies[len(latencies) // 2] if latencies else None
     push_kuma(args.kuma_push_url, "down" if down else "up",
-              f"{tested} getestet: {up} UP, {down} DOWN | nicht buchbar {counts['NICHT_BUCHBAR']} | "
+              f"{tested} getestet{mode_label}: {up} UP, {down} DOWN | nicht buchbar {counts['NICHT_BUCHBAR']} | "
               f"{len(program)} Vorstellungen / {len(titles)} Filme", median_latency)
 
     status_icon = "✅" if down == 0 else "❌"
@@ -174,6 +230,12 @@ def main() -> None:
     ap.add_argument("--kuma-push-url", default=os.environ.get("KUMA_PUSH_URL", ""),
                      help="Uptime-Kuma Push-Monitor-URL (Default: Umgebungsvariable KUMA_PUSH_URL). "
                           "Leer = kein Push.")
+    ap.add_argument("--lite", action="store_true",
+                     help="Lite-Modus: nach einem fehlerfreien Vollcheck nur noch eine zufällig "
+                          "gewählte Vorstellung testen, bis die fehlschlägt (spart Requests).")
+    ap.add_argument("--lite-state", default="lite_state.json",
+                     help="Datei, in der der Lite-Modus merkt, welche Vorstellung er aktuell "
+                          "stellvertretend testet (muss über mehrere Läufe hinweg erhalten bleiben).")
     args = ap.parse_args()
 
     if args.report:
