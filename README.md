@@ -1,5 +1,7 @@
 # Kino-Uptime-Monitor – Thalia Lichtspiele Bous
 
+[![Uptime Check](https://github.com/xinox/thalia-kino-uptime/actions/workflows/uptime.yml/badge.svg)](https://github.com/xinox/thalia-kino-uptime/actions/workflows/uptime.yml)
+
 Prüft, ob die Online-Sitzplatzreservierung (kinoheld-Widget) auf
 [kino-bous.de](https://www.kino-bous.de) für alle aktuell im Programm befindlichen
 Vorstellungen funktioniert. Das Programm wird bei jedem Lauf neu von der Website
@@ -42,6 +44,23 @@ Repo selbst wird keine Historie gespeichert (kein wachsendes CSV, keine Bot-Comm
 Bleibt ein Heartbeat aus (weil z.B. der Actions-Lauf fehlschlägt oder GitHub den
 Workflow nach 60 Tagen Repo-Inaktivität automatisch deaktiviert hat), erkennt Kuma
 das selbst über sein "erwartetes Intervall" und schlägt ebenfalls Alarm.
+
+### Status auch ohne Kuma sichtbar
+
+Der Badge oben in dieser README zeigt den echten Reservierungsstatus, nicht nur
+"Script abgestürzt oder nicht": `monitor.py --once` beendet sich mit Exit-Code 1,
+sobald mindestens eine Vorstellung DOWN war, wodurch der Actions-Lauf selbst als
+fehlgeschlagen markiert wird und der Badge rot wird. Zusätzlich schreibt jeder Lauf
+eine kompakte Zusammenfassung (Anzahl UP/DOWN, nicht buchbar, übersprungen,
+Median-Latenz) in die GitHub-Actions Job-Summary – sichtbar direkt oben auf der
+jeweiligen [Lauf-Seite](https://github.com/xinox/thalia-kino-uptime/actions/workflows/uptime.yml),
+ohne im rohen Log suchen zu müssen. Das funktioniert unabhängig von Kuma und ganz
+ohne Login öffentlich einsehbar.
+
+Trade-off: Schon eine einzelne DOWN-Vorstellung reicht, damit der ganze Lauf (und
+damit der Badge) auf Rot springt – es gibt aktuell keine Schwelle (z.B. "erst ab 3
+von 80 DOWN"). Für ein Kino mit überschaubar vielen Vorstellungen ist das bewusst
+grob gehalten, um keine echten Ausfälle zu verschlucken.
 
 ### Einrichtung
 

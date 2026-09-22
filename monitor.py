@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import csv
 import os
+import sys
 import time
 import urllib.parse
 import urllib.request
@@ -41,7 +42,21 @@ def push_kuma(push_url: str, status: str, msg: str, ping: "int | None" = None, t
         print(f"  WARNUNG: Kuma-Push fehlgeschlagen: {type(e).__name__}: {e}")
 
 
-def run_once(tester, args, state) -> None:
+def write_github_summary(text: str) -> None:
+    """Hängt Markdown an die GitHub-Actions Job-Summary an (sichtbar oben auf der
+    Lauf-Seite statt nur im rohen Log). Außerhalb von Actions ist die Variable
+    nicht gesetzt, dann passiert nichts."""
+    path = os.environ.get("GITHUB_STEP_SUMMARY")
+    if not path:
+        return
+    with open(path, "a", encoding="utf-8") as f:
+        f.write(text + "\n")
+
+
+def run_once(tester, args, state) -> bool:
+    """Führt einen Durchlauf aus. Rückgabewert: True = alles UP (oder nichts zu
+    testen), False = mindestens ein DOWN oder das Programm konnte nicht geladen
+    werden – wird für den Exit-Code bei --once genutzt (Actions-Badge)."""
     now = now_local()
     try:
         program = fetch_program(args.program_url)
@@ -50,7 +65,8 @@ def run_once(tester, args, state) -> None:
         log(args.csv, CheckResult(ts=now.isoformat(timespec="seconds"), show_id="", title="",
                                   start="", status="PROGRAMM_FEHLER", error=str(e)[:200]))
         push_kuma(args.kuma_push_url, "down", f"Programm nicht ladbar: {e}"[:200])
-        return
+        write_github_summary(f"### ❌ Programm nicht ladbar\n\n{e}")
+        return False
 
     # Änderungen im Programm melden
     titles = {s.title for s in program}
@@ -88,6 +104,17 @@ def run_once(tester, args, state) -> None:
     push_kuma(args.kuma_push_url, "down" if down else "up",
               f"{tested} getestet: {up} UP, {down} DOWN | nicht buchbar {counts['NICHT_BUCHBAR']} | "
               f"{len(program)} Vorstellungen / {len(titles)} Filme", median_latency)
+
+    status_icon = "✅" if down == 0 else "❌"
+    write_github_summary(
+        f"### {status_icon} Kino Bous Uptime-Check — {now:%Y-%m-%d %H:%M:%S}\n\n"
+        f"- Vorstellungen: {len(program)} / Filme: {len(titles)}\n"
+        f"- Getestet: {tested} → UP {up}, DOWN {down} ({pct})\n"
+        f"- Nicht buchbar: {counts['NICHT_BUCHBAR']}\n"
+        f"- Übersprungen: {sum(v for k, v in counts.items() if k.startswith('SKIP'))}\n"
+        + (f"- Median-Latenz: {median_latency} ms\n" if median_latency is not None else "")
+    )
+    return down == 0
 
 
 def log(path: str, r: CheckResult) -> None:
@@ -157,9 +184,9 @@ def main() -> None:
     state: dict = {"titles": None}
     while True:
         started = time.monotonic()
-        run_once(tester, args, state)
+        ok = run_once(tester, args, state)
         if args.once:
-            break
+            sys.exit(0 if ok else 1)
         time.sleep(max(0, args.interval - (time.monotonic() - started)))
 
 
