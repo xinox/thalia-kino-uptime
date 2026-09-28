@@ -1,0 +1,6 @@
+.git
+.github
+.claude
+__pycache__
+*.pyc
+kino_uptime.csv
